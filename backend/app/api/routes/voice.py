@@ -3,7 +3,13 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from gtts import gTTS
+
+try:
+    from gtts import gTTS
+    HAS_GTTS = True
+except ImportError:
+    gTTS = None
+    HAS_GTTS = False
 
 from app.database.session import get_db
 from app.schemas.voice import (
@@ -17,6 +23,7 @@ router = APIRouter(prefix="/voice", tags=["Voice & AI"])
 
 # In-memory audio cache for frequent speech utterances
 _AUDIO_CACHE = {}
+
 
 
 @router.post("/command", response_model=VoiceCommandResponse)
@@ -54,6 +61,13 @@ def stream_text_to_speech(
     cleaned_text = text.strip()
     if not cleaned_text:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    if not HAS_GTTS or gTTS is None:
+        raise HTTPException(
+            status_code=503, 
+            detail="gTTS package is not installed. Please run: pip install gTTS"
+        )
+
 
     # Normalize language code to standard gTTS language keys
     lang_code = lang.split("-")[0].lower()
