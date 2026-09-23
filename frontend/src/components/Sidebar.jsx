@@ -28,7 +28,7 @@ export default function Sidebar({
     { id: 'rooms', label: 'Rooms', icon: Home, disabled: false },
     { id: 'devices', label: 'Devices', icon: Cpu, disabled: false },
     { id: 'automation', label: 'Automation', icon: Workflow, disabled: true },
-    { id: 'voice', label: 'Voice Control', icon: Mic, disabled: true },
+    { id: 'voice', label: 'Voice Control', icon: Mic, disabled: false },
     { id: 'settings', label: 'Settings', icon: Settings, disabled: true }
   ];
 

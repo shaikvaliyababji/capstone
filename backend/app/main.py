@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.database.init_db import init_db
 from app.api.routes.devices import router as devices_router
+from app.api.routes.voice import router as voice_router
 
 
 @asynccontextmanager
@@ -39,6 +40,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(devices_router)
+app.include_router(voice_router)
 
 
 @app.get("/")

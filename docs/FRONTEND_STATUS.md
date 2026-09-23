@@ -71,23 +71,24 @@ frontend/
 ---
 
 ## 5. Components Created
-1. **App.jsx**: Root component managing global list of devices, connection states, initial page loading spinners, and active layout views ('dashboard', 'rooms', 'devices').
+1. **App.jsx**: Root component managing global list of devices, connection states, initial page loading spinners, and active layout views ('dashboard', 'rooms', 'devices', 'voice').
 2. **Header.jsx**: Top bar containing logo, responsive mobile drawer toggle, real-time derived statistics (Active/Total devices, Rooms count), and system connection badge.
-3. **Sidebar.jsx**: Navigation dashboard containing options for Dashboard, Rooms, and Devices. Future items (Automation, Voice Control, Settings) are styled appropriately and disabled with "Coming Soon" badges.
+3. **Sidebar.jsx**: Navigation dashboard containing options for Dashboard, Rooms, Devices, and Voice Control. Future items (Automation, Settings) are styled appropriately and disabled with "Coming Soon" badges.
 4. **StatusBadge.jsx**: Bullet-shaped indicator badge with a glowing pulsing center dot that maps status values to correct styling classes.
 5. **DeviceCard.jsx**: Card layout containing category icon, device name, room details, category label, and slider switch. Throttles double clicks, manages card-level loading state, and overlays a retry card if command transmission fails.
 6. **RoomSection.jsx**: Groups devices matching `device.room` and displays a styled group header showing formatted names (e.g. `Living Room`) and count badges.
 7. **DeviceGrid.jsx**: Simple, responsive flex/grid card container for flat layouts.
+8. **VoiceControl.jsx**: Full AI voice assistant interface with animated pulsing microphone orb, Web Speech API speech-to-text, native Text-to-Speech audio feedback, text query prompt, smart scene chips, and interactive conversation message log with device mutation badges.
 
 ---
 
 ## 6. API Integration & Flow
 Device states are maintained with the FastAPI backend as the single source of truth. State updates occur as follows:
-1. User clicks the slider switch on a `DeviceCard`.
-2. Slider inputs are disabled, and the card starts its local loading spinner.
-3. `api.js` fires a `POST` request to `http://127.0.0.1:8000/devices/{device_name}/on` (or `/off`).
-4. If successful, the parent `App` is notified to pull the latest device array from the API (`GET /devices/`) and refresh the screen.
-5. If the request fails, the local card shows a warning dialog, preserves the original state, and offers "Retry" and "Cancel" controls.
+1. User clicks the slider switch on a `DeviceCard` or issues a voice/text command via `VoiceControl`.
+2. For cards: `api.js` fires `POST /devices/{device_name}/on` (or `/off`).
+3. For voice: `api.js` fires `POST /voice/command` with query text. The backend executes NLP parsing and mutates required devices.
+4. If successful, the parent `App` refreshes device states via `GET /devices/` and updates the entire UI in real time.
+5. If the request fails, the local UI displays friendly error alerts.
 
 ---
 
@@ -96,6 +97,8 @@ All requests respect URL encoding (`encodeURIComponent`) for device names.
 - **GET** `http://127.0.0.1:8000/devices/` - Fetches all registered device configurations and statuses.
 - **POST** `http://127.0.0.1:8000/devices/{device}/on` - Activates a device (status becomes `ON`, `UNLOCKED`, or `OPEN`).
 - **POST** `http://127.0.0.1:8000/devices/{device}/off` - Deactivates a device (status becomes `OFF`, `LOCKED`, or `CLOSED`).
+- **POST** `http://127.0.0.1:8000/voice/command` - Natural language and voice intent processing.
+- **GET** `http://127.0.0.1:8000/voice/scenes` - Smart home scene routines and trigger phrases.
 
 ---
 
@@ -116,18 +119,21 @@ FastAPI CORS middleware is configured inside `backend/app/main.py` to allow cros
 ---
 
 ## 10. Implemented Features
-- **Dynamic Device Syncing**: Loads all 7 seeded devices (`bedroom_light`, `living_room_light`, `kitchen_light`, `fan`, `ac`, `door`, `curtains`) dynamically from the backend.
-- **State Logic Synchronization**: Correctly maps ON (`ON`, `UNLOCKED`, `OPEN`) and OFF (`OFF`, `LOCKED`, `CLOSED`) states for light, fan, air conditioner, security, and comfort devices.
+- **AI Voice Assistant**: Complete voice control with browser Speech Recognition and Speech Synthesis.
+- **Dynamic Device Syncing**: Loads all 7 seeded devices dynamically from backend.
+- **State Logic Synchronization**: Correctly maps ON and OFF states for all device categories.
+- **Smart Scene Triggers**: Good Night, Good Morning, Movie Mode, Away Mode, Welcome Home, and Party Mode.
 - **Derived System Stats**: Derives Total Devices, Active Devices, and Room counts dynamically from the API results.
-- **Network Resiliency**: If the backend server stops, the frontend displays a full-screen connectivity warning showing "Backend connection unavailable" with a "Retry Connection" action.
+- **Network Resiliency**: If the backend server stops, the frontend displays a full-screen connectivity warning.
 - **Responsive Layout**: Adapts smoothly to mobile, tablet, and desktop viewports using CSS grid layouts and collapsible sidebar navigation.
-- **Interactive UI**: Custom sliders, sleek glassmorphism panels, color coding for active categories, hover states, and micro-animations.
+- **Interactive UI**: Custom sliders, sleek glassmorphism panels, glowing active icons, hover states, and micro-animations.
 
 ---
 
 ## 11. Planned / Future Features
-- **AI NLP**: Real-time natural language query parsing and command processing (Coming Soon).
-- **Voice Control**: Client-side speech-to-text integration for vocal control (Coming Soon).
+- **Automation / Scheduler**: Custom rule scheduling (Coming Soon).
+- **WebSockets / MQTT**: Real-time push updates for external state mutations.
+- **Authentication**: JWT token authentication and sign-in pages.
 - **Automation / Scheduler**: Custom rule scheduling (Coming Soon).
 - **WebSockets / MQTT**: Real-time push updates for devices that change state externally.
 - **Authentication**: JWT token authentication and sign-in pages.

@@ -12,6 +12,7 @@ import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import RoomSection from './components/RoomSection';
 import DeviceGrid from './components/DeviceGrid';
+import VoiceControl from './components/VoiceControl';
 import { getDevices } from './services/api';
 
 export default function App() {
@@ -204,6 +205,13 @@ export default function App() {
                   onStateUpdate={handleStateUpdate}
                 />
               </div>
+            )}
+
+            {activeTab === 'voice' && (
+              <VoiceControl
+                devices={devices}
+                onStateUpdate={handleStateUpdate}
+              />
             )}
 
           </main>
