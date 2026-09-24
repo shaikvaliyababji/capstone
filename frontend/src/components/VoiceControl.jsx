@@ -187,6 +187,11 @@ export default function VoiceControl({ devices, onStateUpdate }) {
   const isSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
   const wakeWordEnabledRef = useRef(wakeWordEnabled);
+  const wakeStageRef = useRef('IDLE');
+  const selectedWakePresetIdRef = useRef(selectedWakePresetId);
+  const selectedLangRef = useRef(selectedLang);
+  const lastWakeWordRef = useRef('');
+  const latestCapturedTextRef = useRef('');
   const shouldRestartRef = useRef(false);
   const restartTimerRef = useRef(null);
   const silenceTimerRef = useRef(null);
@@ -194,6 +199,12 @@ export default function VoiceControl({ devices, onStateUpdate }) {
   const finalTranscriptRef = useRef('');
   const audioPlayerRef = useRef(null);
   const availableVoicesRef = useRef([]);
+
+  // Synchronized Wake Stage updater (updates both ref for async callbacks and state for UI)
+  const updateWakeStage = (stage) => {
+    wakeStageRef.current = stage;
+    setWakeStage(stage);
+  };
 
   // Check Web Speech API support
   const SpeechRecognition = typeof window !== 'undefined' && (
@@ -206,6 +217,14 @@ export default function VoiceControl({ devices, onStateUpdate }) {
     shouldRestartRef.current = wakeWordEnabled;
     localStorage.setItem('ai_smart_home_wakeword', wakeWordEnabled ? 'true' : 'false');
   }, [wakeWordEnabled]);
+
+  useEffect(() => {
+    selectedWakePresetIdRef.current = selectedWakePresetId;
+  }, [selectedWakePresetId]);
+
+  useEffect(() => {
+    selectedLangRef.current = selectedLang;
+  }, [selectedLang]);
 
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
@@ -298,20 +317,21 @@ export default function VoiceControl({ devices, onStateUpdate }) {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    isSpeakingRef.current = false;
     setIsSpeaking(false);
   };
 
   // Browser SpeechSynthesis fallback
   const playBrowserSynthesisFallback = (text, langCode) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setIsSpeaking(false);
+      resumeAfterSpeaking();
       return;
     }
     try {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.0;
-      const targetLocale = LOCALE_MAP[langCode] || selectedLang;
+      const targetLocale = LOCALE_MAP[langCode] || selectedLangRef.current || selectedLang;
       utterance.lang = targetLocale;
 
       const voices = availableVoicesRef.current || [];
@@ -321,22 +341,22 @@ export default function VoiceControl({ devices, onStateUpdate }) {
       if (matched) utterance.voice = matched;
 
       utterance.onend = () => {
-        setIsSpeaking(false);
         resumeAfterSpeaking();
       };
       utterance.onerror = () => {
-        setIsSpeaking(false);
         resumeAfterSpeaking();
       };
 
       window.speechSynthesis.speak(utterance);
     } catch (_) {
-      setIsSpeaking(false);
+      resumeAfterSpeaking();
     }
   };
 
   // Resume listening after speaking finishes
   const resumeAfterSpeaking = () => {
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
     if (wakeWordEnabledRef.current && !isListeningRef.current) {
       setTimeout(() => {
         startRecognition();
@@ -346,10 +366,14 @@ export default function VoiceControl({ devices, onStateUpdate }) {
 
   // Speak response out loud in authentic native language via FastAPI gTTS streaming
   const speakResponse = async (text, responseLang) => {
-    if (!ttsEnabled || !text) return;
+    if (!ttsEnabled || !text) {
+      resumeAfterSpeaking();
+      return;
+    }
 
     stopAudioPlayback();
     setIsSpeaking(true);
+    isSpeakingRef.current = true;
 
     const cleanLang = (responseLang || currentLangKey || 'te').split('-')[0].toLowerCase();
 
@@ -362,7 +386,6 @@ export default function VoiceControl({ devices, onStateUpdate }) {
       audioPlayerRef.current = audio;
 
       audio.onended = () => {
-        setIsSpeaking(false);
         audioPlayerRef.current = null;
         resumeAfterSpeaking();
       };
@@ -452,6 +475,7 @@ export default function VoiceControl({ devices, onStateUpdate }) {
     setErrorMessage(null);
     clearSilenceTimer();
     finalTranscriptRef.current = '';
+    latestCapturedTextRef.current = '';
     isExecutingRef.current = false;
     shouldRestartRef.current = wakeWordEnabledRef.current;
 
@@ -459,7 +483,7 @@ export default function VoiceControl({ devices, onStateUpdate }) {
       const rec = new SpeechRecognition();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = selectedLang; // Native acoustic model (te-IN, hi-IN, en-US, etc.)
+      rec.lang = selectedLangRef.current || selectedLang; // Native acoustic model (te-IN, hi-IN, en-US, etc.)
 
       rec.onstart = () => {
         isListeningRef.current = true;
@@ -483,36 +507,54 @@ export default function VoiceControl({ devices, onStateUpdate }) {
         }
 
         const fullCaptured = (finalTranscriptRef.current + (interim ? ' ' + interim : '')).trim();
-        setTranscriptPreview(fullCaptured);
-
         if (!fullCaptured) return;
 
         // ==========================================
-        // STAGE 2: AWAKE STAGE (Wake word already heard, now speaking command!)
+        // STAGE 2: AWAKE STAGE (Wake word already detected, user speaking command!)
         // ==========================================
-        if (wakeWordEnabledRef.current && wakeStage === 'AWAKE') {
-          clearSilenceTimer();
-          // User is speaking their command: wait for 1.1s silence to execute
-          silenceTimerRef.current = setTimeout(() => {
-            if (!isExecutingRef.current && fullCaptured) {
+        if (wakeWordEnabledRef.current && wakeStageRef.current === 'AWAKE') {
+          let cleanCommand = fullCaptured;
+          if (lastWakeWordRef.current) {
+            const trigLower = lastWakeWordRef.current.toLowerCase();
+            const lower = cleanCommand.toLowerCase();
+            const idx = lower.indexOf(trigLower);
+            if (idx !== -1 && idx < 5) {
+              cleanCommand = cleanCommand.slice(idx + trigLower.length).replace(/^[,\s.!:?-]+/, '').trim();
+            }
+          }
+
+          if (cleanCommand) {
+            latestCapturedTextRef.current = cleanCommand;
+            setTranscriptPreview(cleanCommand);
+
+            clearSilenceTimer();
+            // Automatically execute command after 1000ms of user silence!
+            silenceTimerRef.current = setTimeout(() => {
+              if (isExecutingRef.current || isProcessingRef.current) return;
+              const textToRun = latestCapturedTextRef.current.trim();
+              if (!textToRun) return;
+
               isExecutingRef.current = true;
               clearAwakeTimeout();
-              setWakeStage('IDLE');
+              updateWakeStage('IDLE');
+              lastWakeWordRef.current = '';
+              setLastWakeWordHeard('');
               finalTranscriptRef.current = '';
               setTranscriptPreview('');
-              executeCommand(fullCaptured);
-            }
-          }, 1100);
+              executeCommand(textToRun);
+            }, 1000);
+          }
           return;
         }
 
         // ==========================================
         // STAGE 1: IDLE WAKE-WORD SEARCH
         // ==========================================
-        if (wakeWordEnabledRef.current && wakeStage === 'IDLE') {
+        if (wakeWordEnabledRef.current && wakeStageRef.current === 'IDLE') {
           const lower = fullCaptured.toLowerCase();
-          const activePreset = WAKE_WORD_PRESETS.find(p => p.id === selectedWakePresetId) || WAKE_WORD_PRESETS[0];
-          const triggers = activePreset.triggers;
+          const activePreset = WAKE_WORD_PRESETS.find(p => p.id === selectedWakePresetIdRef.current) || WAKE_WORD_PRESETS[0];
+          // Sort triggers longest first so multi-word triggers match before single words
+          const triggers = [...activePreset.triggers].sort((a, b) => b.length - a.length);
 
           let matchedTrigger = null;
           let commandAfterWake = '';
@@ -528,64 +570,78 @@ export default function VoiceControl({ devices, onStateUpdate }) {
           }
 
           if (matchedTrigger) {
+            lastWakeWordRef.current = matchedTrigger;
             setLastWakeWordHeard(matchedTrigger);
             playWakeChime();
 
-            clearSilenceTimer();
-            // Wait for 1.1s silence so user can finish their complete sentence
-            silenceTimerRef.current = setTimeout(() => {
-              if (isExecutingRef.current) return;
+            // Transition to AWAKE stage immediately
+            updateWakeStage('AWAKE');
 
-              // Re-check captured text after user paused
-              const latestCaptured = (finalTranscriptRef.current + (interim ? ' ' + interim : '')).trim();
-              const latestLower = latestCaptured.toLowerCase();
-              const latestIdx = latestLower.indexOf(matchedTrigger.toLowerCase());
-              const finalCommand = latestIdx !== -1 
-                ? latestCaptured.slice(latestIdx + matchedTrigger.length).replace(/^[,\s.!:?-]+/, '').trim()
-                : commandAfterWake;
+            // 8-second window to finish command
+            clearAwakeTimeout();
+            awakeTimeoutRef.current = setTimeout(() => {
+              updateWakeStage('IDLE');
+              lastWakeWordRef.current = '';
+              setLastWakeWordHeard('');
+              finalTranscriptRef.current = '';
+              setTranscriptPreview('');
+            }, 8000);
 
-              if (finalCommand) {
-                // CASE A: User said Wake Word + Command together (e.g. "Hey Jarvis turn on the AC")
+            if (commandAfterWake) {
+              // User said Wake Word + Command together (e.g. "Hey Jarvis turn on the AC")
+              latestCapturedTextRef.current = commandAfterWake;
+              setTranscriptPreview(commandAfterWake);
+              finalTranscriptRef.current = commandAfterWake;
+
+              clearSilenceTimer();
+              silenceTimerRef.current = setTimeout(() => {
+                if (isExecutingRef.current || isProcessingRef.current) return;
+                const textToRun = latestCapturedTextRef.current.trim();
+                if (!textToRun) return;
+
                 isExecutingRef.current = true;
-                finalTranscriptRef.current = '';
-                setTranscriptPreview('');
-                executeCommand(finalCommand);
-              } else {
-                // CASE B: User said ONLY the Wake Word (e.g. "Hey Jarvis" or "హలో")
-                // Acknowledge aloud and transition to 'AWAKE' stage!
-                finalTranscriptRef.current = '';
-                setTranscriptPreview('');
-                setWakeStage('AWAKE');
-
-                const ackText = WAKE_WORD_ACK[currentLangKey] || WAKE_WORD_ACK['te'];
-                speakResponse(ackText, currentLangKey);
-
-                // Set 8-second expiry for follow-up command
                 clearAwakeTimeout();
-                awakeTimeoutRef.current = setTimeout(() => {
-                  setWakeStage('IDLE');
-                  setLastWakeWordHeard('');
-                }, 8000);
-              }
-            }, 1100);
-
+                updateWakeStage('IDLE');
+                lastWakeWordRef.current = '';
+                setLastWakeWordHeard('');
+                finalTranscriptRef.current = '';
+                setTranscriptPreview('');
+                executeCommand(textToRun);
+              }, 1000);
+            } else {
+              // User said ONLY the Wake Word (e.g. "Hey Jarvis" or "హలో")
+              finalTranscriptRef.current = '';
+              setTranscriptPreview('');
+              clearSilenceTimer();
+            }
             return;
           }
+
+          // In IDLE without wake word, trim buffer to avoid unbounded accumulation of ambient noise
+          if (finalTranscriptRef.current.length > 80) {
+            finalTranscriptRef.current = finalTranscriptRef.current.slice(-40);
+          }
+          return;
         }
 
         // ==========================================
         // MANUAL PUSH-TO-TALK MODE (Hands-free is OFF)
         // ==========================================
         if (!wakeWordEnabledRef.current && fullCaptured) {
+          latestCapturedTextRef.current = fullCaptured;
+          setTranscriptPreview(fullCaptured);
+
           clearSilenceTimer();
           silenceTimerRef.current = setTimeout(() => {
-            if (!isExecutingRef.current && fullCaptured) {
-              isExecutingRef.current = true;
-              finalTranscriptRef.current = '';
-              setTranscriptPreview('');
-              executeCommand(fullCaptured);
-            }
-          }, 1200);
+            if (isExecutingRef.current || isProcessingRef.current) return;
+            const textToRun = latestCapturedTextRef.current.trim();
+            if (!textToRun) return;
+
+            isExecutingRef.current = true;
+            finalTranscriptRef.current = '';
+            setTranscriptPreview('');
+            executeCommand(textToRun);
+          }, 1100);
         }
       };
 
@@ -627,7 +683,8 @@ export default function VoiceControl({ devices, onStateUpdate }) {
     setWakeWordEnabled(next);
     wakeWordEnabledRef.current = next;
     shouldRestartRef.current = next;
-    setWakeStage('IDLE');
+    updateWakeStage('IDLE');
+    lastWakeWordRef.current = '';
     setLastWakeWordHeard('');
     clearAwakeTimeout();
 
@@ -648,7 +705,7 @@ export default function VoiceControl({ devices, onStateUpdate }) {
     if (isListening) {
       // User tapped to stop and send immediately
       clearSilenceTimer();
-      const textToSend = finalTranscriptRef.current.trim() || transcriptPreview.trim();
+      const textToSend = latestCapturedTextRef.current.trim() || finalTranscriptRef.current.trim() || transcriptPreview.trim();
       stopRecognition(wakeWordEnabledRef.current);
       if (textToSend) {
         executeCommand(textToSend);
@@ -663,17 +720,25 @@ export default function VoiceControl({ devices, onStateUpdate }) {
   const executeCommand = async (commandText) => {
     clearSilenceTimer();
     clearAwakeTimeout();
-    setWakeStage('IDLE');
+    updateWakeStage('IDLE');
+    lastWakeWordRef.current = '';
     setLastWakeWordHeard('');
 
     const textToSubmit = commandText || inputText;
-    if (!textToSubmit || !textToSubmit.trim() || isProcessing) return;
+    if (!textToSubmit || !textToSubmit.trim() || isProcessingRef.current) {
+      isExecutingRef.current = false;
+      return;
+    }
 
     const trimmed = textToSubmit.trim();
+    isExecutingRef.current = true;
+    isProcessingRef.current = true;
+    setIsProcessing(true);
     setInputText('');
     setTranscriptPreview('');
     setErrorMessage(null);
     finalTranscriptRef.current = '';
+    latestCapturedTextRef.current = '';
 
     // Append User Message
     const userMessage = {
@@ -683,10 +748,9 @@ export default function VoiceControl({ devices, onStateUpdate }) {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
     setMessages(prev => [...prev, userMessage]);
-    setIsProcessing(true);
 
     try {
-      const result = await sendVoiceCommand(trimmed, selectedLang);
+      const result = await sendVoiceCommand(trimmed, selectedLangRef.current || selectedLang);
 
       // Append Assistant Message
       const assistantMessage = {
@@ -718,8 +782,16 @@ export default function VoiceControl({ devices, onStateUpdate }) {
       };
       setMessages(prev => [...prev, failMessage]);
     } finally {
+      isProcessingRef.current = false;
       setIsProcessing(false);
       isExecutingRef.current = false;
+
+      // Resume hands-free listening if TTS is disabled
+      if (!ttsEnabled && wakeWordEnabledRef.current && !isListeningRef.current) {
+        setTimeout(() => {
+          startRecognition();
+        }, 400);
+      }
     }
   };
 
@@ -918,13 +990,18 @@ export default function VoiceControl({ devices, onStateUpdate }) {
               <button 
                 className="transcript-send-btn"
                 onClick={() => {
-                  if (!isExecutingRef.current && transcriptPreview) {
+                  const toSend = latestCapturedTextRef.current.trim() || transcriptPreview.trim();
+                  if (!isExecutingRef.current && !isProcessingRef.current && toSend) {
                     isExecutingRef.current = true;
                     clearSilenceTimer();
                     clearAwakeTimeout();
+                    updateWakeStage('IDLE');
+                    lastWakeWordRef.current = '';
+                    setLastWakeWordHeard('');
                     finalTranscriptRef.current = '';
+                    latestCapturedTextRef.current = '';
                     setTranscriptPreview('');
-                    executeCommand(transcriptPreview);
+                    executeCommand(toSend);
                   }
                 }}
                 title="Send recognized speech now"
